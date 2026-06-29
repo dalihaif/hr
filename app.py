@@ -9,6 +9,9 @@ import sqlite3
 import datetime
 from functools import wraps
 from flask import Flask, request, jsonify, send_file, g, session, render_template
+from utils.excel_handler import export_employees_to_excel, import_employees_from_excel, export_salary_to_excel, export_performance_to_excel
+from utils.validators import validate_email, validate_phone, validate_password, sanitize_string, validate_date
+from utils.rate_limiter import rate_limit, login_rate_limit
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dlhr_2026_secret_key_aes256')
@@ -327,6 +330,150 @@ def init_db():
     );
     """)
     
+    # 自定义字段扩展
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS custom_fields (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        field_name TEXT NOT NULL,
+        field_code TEXT NOT NULL UNIQUE,
+        field_type TEXT NOT NULL,
+        options TEXT,
+        department TEXT,
+        is_required INTEGER DEFAULT 0,
+        sort_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    
+    CREATE TABLE IF NOT EXISTS employee_custom_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        field_id INTEGER NOT NULL,
+        field_value TEXT,
+        updated_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (emp_id) REFERENCES employees(id),
+        FOREIGN KEY (field_id) REFERENCES custom_fields(id),
+        UNIQUE(emp_id, field_id)
+    );
+    """)
+    
+    # 请假加班管理
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS leave_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        leave_type TEXT NOT NULL,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        days REAL NOT NULL,
+        reason TEXT,
+        status TEXT DEFAULT '待审批',
+        approver_id INTEGER,
+        approved_at TEXT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (emp_id) REFERENCES employees(id),
+        FOREIGN KEY (approver_id) REFERENCES users(id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS overtime_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        overtime_date TEXT NOT NULL,
+        hours REAL NOT NULL,
+        reason TEXT,
+        status TEXT DEFAULT '待审批',
+        approver_id INTEGER,
+        approved_at TEXT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (emp_id) REFERENCES employees(id),
+        FOREIGN KEY (approver_id) REFERENCES users(id)
+    );
+    """)
+    
+    # 职工信息修改申请
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS info_change_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        field_name TEXT NOT NULL,
+        old_value TEXT,
+        new_value TEXT,
+        reason TEXT,
+        status TEXT DEFAULT '待审批',
+        approver_id INTEGER,
+        approved_at TEXT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (emp_id) REFERENCES employees(id),
+        FOREIGN KEY (approver_id) REFERENCES users(id)
+    );
+    """)
+    
+    # 工资项目配置
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS salary_items (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_name TEXT NOT NULL,
+        item_code TEXT NOT NULL UNIQUE,
+        item_type TEXT NOT NULL, -- 固定项、浮动项、扣款项
+        calculation_method TEXT, -- 计算方式：固定值、公式、百分比等
+        formula TEXT, -- 计算公式
+        is_taxable INTEGER DEFAULT 1, -- 是否计税
+        is_visible INTEGER DEFAULT 1, -- 是否在工资条显示
+        sort_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        description TEXT,
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    
+    CREATE TABLE IF NOT EXISTS salary_item_defaults (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        item_id INTEGER NOT NULL,
+        department TEXT,
+        title_level TEXT,
+        default_value REAL DEFAULT 0,
+        FOREIGN KEY (item_id) REFERENCES salary_items(id),
+        UNIQUE(item_id, department, title_level)
+    );
+    """)
+    
+    # 绩效管理项目配置
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS perf_categories (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        category_name TEXT NOT NULL,
+        category_code TEXT NOT NULL UNIQUE,
+        weight REAL DEFAULT 0, -- 权重
+        description TEXT,
+        sort_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now','localtime'))
+    );
+    
+    CREATE TABLE IF NOT EXISTS perf_indicators (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        indicator_name TEXT NOT NULL,
+        indicator_code TEXT NOT NULL UNIQUE,
+        category_id INTEGER,
+        scoring_method TEXT, -- 评分方式：百分制、等级制等
+        max_score REAL DEFAULT 100,
+        weight REAL DEFAULT 0, -- 权重
+        description TEXT,
+        sort_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (category_id) REFERENCES perf_categories(id)
+    );
+    """)
+    
+    # 性能优化 - 添加索引
+    db.executescript("""
+    CREATE INDEX IF NOT EXISTS idx_emp_status ON employees(status);
+    CREATE INDEX IF NOT EXISTS idx_salary_month ON salary_records(month);
+    CREATE INDEX IF NOT EXISTS idx_perf_period ON perf_assessments(period);
+    CREATE INDEX IF NOT EXISTS idx_leave_status ON leave_requests(status);
+    CREATE INDEX IF NOT EXISTS idx_overtime_status ON overtime_requests(status);
+    """)
+    
     # 插入默认管理员
     admin_hash = hashlib.sha256('admin123'.encode()).hexdigest()
     db.execute("INSERT OR IGNORE INTO users (username, password_hash, real_name, role) VALUES (?, ?, ?, ?)",
@@ -495,10 +642,16 @@ def log_operation(action, module, detail=''):
 # 认证 API
 # ============================================================
 @app.route('/api/login', methods=['POST'])
+@login_rate_limit(max_attempts=5, lockout_minutes=15)
 def login():
     data = request.json or {}
     username = data.get('username', '')
     password = data.get('password', '')
+    
+    # 输入验证
+    if not username or not password:
+        return jsonify({'error': '用户名和密码不能为空'}), 400
+    
     db = get_db()
     user = db.execute("SELECT * FROM users WHERE username=? AND is_active=1", (username,)).fetchone()
     if not user:
@@ -603,6 +756,29 @@ def get_employee(emp_id):
 @require_permission('personnel', 'write')
 def create_employee():
     data = request.json or {}
+    
+    # 验证必填字段
+    if not data.get('emp_no') or not data.get('name'):
+        return jsonify({'error': '工号和姓名不能为空'}), 400
+    
+    # 验证邮箱格式
+    if data.get('email') and not validate_email(data['email']):
+        return jsonify({'error': '邮箱格式不正确'}), 400
+    
+    # 验证手机号格式
+    if data.get('phone') and not validate_phone(data['phone']):
+        return jsonify({'error': '手机号格式不正确'}), 400
+    
+    # 验证身份证号格式
+    if data.get('id_card') and not validate_id_card(data['id_card']):
+        return jsonify({'error': '身份证号格式不正确'}), 400
+    
+    # 验证日期格式
+    if data.get('birth_date') and not validate_date(data['birth_date']):
+        return jsonify({'error': '出生日期格式不正确'}), 400
+    if data.get('entry_date') and not validate_date(data['entry_date']):
+        return jsonify({'error': '入职日期格式不正确'}), 400
+    
     db = get_db()
     try:
         db.execute("""INSERT INTO employees (emp_no, name, gender, birth_date, id_card_encrypted, phone_encrypted, 
@@ -1158,6 +1334,663 @@ def perf_stats():
     return jsonify({'period': period, 'summary': dict(stats), 'by_dept': [dict(r) for r in dept_stats]})
 
 # ============================================================
+# 自定义字段管理 API
+# ============================================================
+@app.route('/api/custom-fields', methods=['GET', 'POST'])
+@require_permission('personnel', 'write')
+def custom_fields():
+    db = get_db()
+    if request.method == 'GET':
+        dept = request.args.get('department', '')
+        if dept:
+            rows = db.execute("SELECT * FROM custom_fields WHERE (department=? OR department IS NULL) AND is_active=1 ORDER BY sort_order", (dept,)).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM custom_fields WHERE is_active=1 ORDER BY sort_order").fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            if d.get('options'):
+                try:
+                    d['options'] = json.loads(d['options'])
+                except:
+                    d['options'] = []
+            result.append(d)
+        return jsonify(result)
+    
+    data = request.json or {}
+    db.execute("""INSERT INTO custom_fields (field_name, field_code, field_type, options, department, is_required, sort_order)
+        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+               (data['field_name'], data['field_code'], data['field_type'],
+                json.dumps(data.get('options', [])) if data.get('options') else None,
+                data.get('department'), data.get('is_required', 0), data.get('sort_order', 0)))
+    db.commit()
+    log_operation('创建自定义字段', 'personnel', f"{data['field_name']}")
+    return jsonify({'ok': True})
+
+@app.route('/api/custom-fields/<int:fid>', methods=['PUT', 'DELETE'])
+@require_permission('personnel', 'write')
+def update_custom_field(fid):
+    db = get_db()
+    if request.method == 'DELETE':
+        db.execute("UPDATE custom_fields SET is_active=0 WHERE id=?", (fid,))
+        db.commit()
+        return jsonify({'ok': True})
+    
+    data = request.json or {}
+    fields = []
+    params = []
+    for key in ['field_name', 'field_type', 'options', 'department', 'is_required', 'sort_order']:
+        if key in data:
+            fields.append(f"{key}=?")
+            if key == 'options':
+                params.append(json.dumps(data[key]) if data[key] else None)
+            else:
+                params.append(data[key])
+    
+    if fields:
+        params.append(fid)
+        db.execute(f"UPDATE custom_fields SET {', '.join(fields)} WHERE id=?", params)
+        db.commit()
+    return jsonify({'ok': True})
+
+@app.route('/api/employees/<int:emp_id>/custom-data', methods=['GET', 'PUT'])
+@require_login
+def employee_custom_data(emp_id):
+    db = get_db()
+    if request.method == 'GET':
+        # 获取该职工的所有自定义字段值
+        rows = db.execute("""SELECT cf.field_code, cf.field_name, cf.field_type, cf.options, ecd.field_value
+            FROM employee_custom_data ecd
+            JOIN custom_fields cf ON ecd.field_id=cf.id
+            WHERE ecd.emp_id=? AND cf.is_active=1""", (emp_id,)).fetchall()
+        result = {}
+        for r in rows:
+            d = dict(r)
+            if d.get('options'):
+                try:
+                    d['options'] = json.loads(d['options'])
+                except:
+                    d['options'] = []
+            result[d['field_code']] = d
+        return jsonify(result)
+    
+    # PUT - 更新自定义字段值
+    data = request.json or {}
+    for field_code, field_value in data.items():
+        field = db.execute("SELECT id FROM custom_fields WHERE field_code=? AND is_active=1", (field_code,)).fetchone()
+        if field:
+            db.execute("""INSERT OR REPLACE INTO employee_custom_data (emp_id, field_id, field_value, updated_at)
+                VALUES (?, ?, ?, datetime('now','localtime'))""",
+                       (emp_id, field['id'], field_value))
+    db.commit()
+    log_operation('更新自定义数据', 'personnel', f'职工ID {emp_id}')
+    return jsonify({'ok': True})
+
+# ============================================================
+# 请假加班管理 API
+# ============================================================
+@app.route('/api/leave/request', methods=['POST'])
+@require_login
+def submit_leave_request():
+    data = request.json or {}
+    db = get_db()
+    db.execute("""INSERT INTO leave_requests (emp_id, leave_type, start_date, end_date, days, reason, status)
+        VALUES (?, ?, ?, ?, ?, ?, '待审批')""",
+               (session['user_id'], data['leave_type'], data['start_date'], data['end_date'],
+                data['days'], data.get('reason', '')))
+    db.commit()
+    log_operation('提交请假申请', 'attendance', f"{data['leave_type']} {data['start_date']}")
+    return jsonify({'ok': True})
+
+@app.route('/api/leave/list', methods=['GET'])
+@require_login
+def list_leave_requests():
+    db = get_db()
+    status = request.args.get('status', '')
+    month = request.args.get('month', '')
+    
+    # 普通员工只能看自己的，管理员可以看全部
+    if session.get('role') in ('admin', 'hr_mgr'):
+        conditions = []
+        params = []
+    else:
+        conditions = ["lr.emp_id=?"]
+        params = [session['user_id']]
+    
+    if status:
+        conditions.append("lr.status=?")
+        params.append(status)
+    if month:
+        conditions.append("substr(lr.start_date, 1, 7)=?")
+        params.append(month)
+    
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = db.execute(f"""SELECT lr.*, e.name, e.emp_no, u.real_name as approver_name
+        FROM leave_requests lr
+        JOIN employees e ON lr.emp_id=e.id
+        LEFT JOIN users u ON lr.approver_id=u.id
+        {where} ORDER BY lr.created_at DESC""", params).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/leave/approve', methods=['POST'])
+@require_permission('personnel', 'write')
+def approve_leave():
+    data = request.json or {}
+    db = get_db()
+    db.execute("""UPDATE leave_requests SET status=?, approver_id=?, approved_at=datetime('now','localtime')
+        WHERE id=?""",
+               (data['status'], session['user_id'], data['leave_id']))
+    db.commit()
+    log_operation('审批请假', 'attendance', f"请假ID {data['leave_id']} {data['status']}")
+    return jsonify({'ok': True})
+
+@app.route('/api/overtime/request', methods=['POST'])
+@require_login
+def submit_overtime_request():
+    data = request.json or {}
+    db = get_db()
+    db.execute("""INSERT INTO overtime_requests (emp_id, overtime_date, hours, reason, status)
+        VALUES (?, ?, ?, ?, '待审批')""",
+               (session['user_id'], data['overtime_date'], data['hours'], data.get('reason', '')))
+    db.commit()
+    log_operation('提交加班申请', 'attendance', f"{data['overtime_date']} {data['hours']}小时")
+    return jsonify({'ok': True})
+
+@app.route('/api/overtime/list', methods=['GET'])
+@require_login
+def list_overtime_requests():
+    db = get_db()
+    status = request.args.get('status', '')
+    month = request.args.get('month', '')
+    
+    if session.get('role') in ('admin', 'hr_mgr'):
+        conditions = []
+        params = []
+    else:
+        conditions = ["ot.emp_id=?"]
+        params = [session['user_id']]
+    
+    if status:
+        conditions.append("ot.status=?")
+        params.append(status)
+    if month:
+        conditions.append("substr(ot.overtime_date, 1, 7)=?")
+        params.append(month)
+    
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = db.execute(f"""SELECT ot.*, e.name, e.emp_no, u.real_name as approver_name
+        FROM overtime_requests ot
+        JOIN employees e ON ot.emp_id=e.id
+        LEFT JOIN users u ON ot.approver_id=u.id
+        {where} ORDER BY ot.created_at DESC""", params).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/overtime/approve', methods=['POST'])
+@require_permission('personnel', 'write')
+def approve_overtime():
+    data = request.json or {}
+    db = get_db()
+    db.execute("""UPDATE overtime_requests SET status=?, approver_id=?, approved_at=datetime('now','localtime')
+        WHERE id=?""",
+               (data['status'], session['user_id'], data['overtime_id']))
+    db.commit()
+    log_operation('审批加班', 'attendance', f"加班ID {data['overtime_id']} {data['status']}")
+    return jsonify({'ok': True})
+
+# ============================================================
+# 职工自助服务门户 API
+# ============================================================
+@app.route('/api/self/profile', methods=['GET'])
+@require_login
+def self_profile():
+    """获取当前登录职工的完整信息"""
+    db = get_db()
+    emp = db.execute("SELECT * FROM employees WHERE id=?", (session['user_id'],)).fetchone()
+    if not emp:
+        return jsonify({'error': '未找到职工信息'}), 404
+    
+    d = dict(emp)
+    d['phone'] = aes_decrypt(d.get('phone_encrypted', ''))
+    d['id_card'] = aes_decrypt(d.get('id_card_encrypted', ''))
+    
+    # 脱敏显示
+    if d['phone'] and len(d['phone']) > 7:
+        d['phone_display'] = d['phone'][:3] + '****' + d['phone'][-4:]
+    else:
+        d['phone_display'] = d['phone']
+    if d['id_card'] and len(d['id_card']) > 10:
+        d['id_card_display'] = d['id_card'][:6] + '********' + d['id_card'][-4:]
+    else:
+        d['id_card_display'] = d['id_card']
+    
+    d['education'] = [dict(r) for r in db.execute("SELECT * FROM education_records WHERE emp_id=?", (session['user_id'],)).fetchall()]
+    d['titles'] = [dict(r) for r in db.execute("SELECT * FROM title_records WHERE emp_id=?", (session['user_id'],)).fetchall()]
+    d['positions'] = [dict(r) for r in db.execute("SELECT * FROM position_records WHERE emp_id=?", (session['user_id'],)).fetchall()]
+    d['contracts'] = [dict(r) for r in db.execute("SELECT * FROM contracts WHERE emp_id=?", (session['user_id'],)).fetchall()]
+    
+    return jsonify(d)
+
+@app.route('/api/self/info-change', methods=['POST'])
+@require_login
+def submit_info_change():
+    """提交个人信息修改申请"""
+    data = request.json or {}
+    db = get_db()
+    db.execute("""INSERT INTO info_change_requests (emp_id, field_name, old_value, new_value, reason, status)
+        VALUES (?, ?, ?, ?, ?, '待审批')""",
+               (session['user_id'], data['field_name'], data.get('old_value', ''),
+                data['new_value'], data.get('reason', '')))
+    db.commit()
+    log_operation('提交信息修改申请', 'personnel', f"{data['field_name']}")
+    return jsonify({'ok': True})
+
+@app.route('/api/self/info-change/list', methods=['GET'])
+@require_login
+def list_my_info_changes():
+    """查询我的信息修改申请记录"""
+    db = get_db()
+    rows = db.execute("""SELECT icr.*, u.real_name as approver_name
+        FROM info_change_requests icr
+        LEFT JOIN users u ON icr.approver_id=u.id
+        WHERE icr.emp_id=? ORDER BY icr.created_at DESC""", (session['user_id'],)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/self/salary', methods=['GET'])
+@require_login
+def self_salary():
+    """查询我的工资记录"""
+    month = request.args.get('month', '')
+    db = get_db()
+    if month:
+        rows = db.execute("""SELECT s.* FROM salary_records s
+            WHERE s.emp_id=? AND s.month=? ORDER BY s.month DESC""",
+                         (session['user_id'], month)).fetchall()
+    else:
+        rows = db.execute("""SELECT s.* FROM salary_records s
+            WHERE s.emp_id=? ORDER BY s.month DESC LIMIT 12""",
+                         (session['user_id'],)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/self/performance', methods=['GET'])
+@require_login
+def self_performance():
+    """查询我的绩效记录"""
+    period = request.args.get('period', '')
+    db = get_db()
+    if period:
+        rows = db.execute("""SELECT pa.*, pt.name as template_name
+            FROM perf_assessments pa
+            JOIN perf_templates pt ON pa.template_id=pt.id
+            WHERE pa.emp_id=? AND pa.period=? ORDER BY pa.period DESC""",
+                         (session['user_id'], period)).fetchall()
+    else:
+        rows = db.execute("""SELECT pa.*, pt.name as template_name
+            FROM perf_assessments pa
+            JOIN perf_templates pt ON pa.template_id=pt.id
+            WHERE pa.emp_id=? ORDER BY pa.period DESC LIMIT 12""",
+                         (session['user_id'],)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/self/performance/<int:aid>', methods=['GET'])
+@require_login
+def self_performance_detail(aid):
+    """获取我的考核详情"""
+    db = get_db()
+    assessment = db.execute("""SELECT pa.*, pt.name as template_name
+        FROM perf_assessments pa
+        JOIN perf_templates pt ON pa.template_id=pt.id
+        WHERE pa.id=? AND pa.emp_id=?""", (aid, session['user_id'])).fetchone()
+    if not assessment:
+        return jsonify({'error': '考核不存在'}), 404
+    
+    d = dict(assessment)
+    scores = db.execute("""SELECT ps.*, pd.name, pd.weight, pd.max_score
+        FROM perf_scores ps
+        JOIN perf_dimensions pd ON ps.dimension_id=pd.id
+        WHERE ps.assessment_id=?""", (aid,)).fetchall()
+    d['scores'] = [dict(r) for r in scores]
+    return jsonify(d)
+
+# ============================================================
+# Excel导入导出 API
+# ============================================================
+@app.route('/api/employees/export', methods=['GET'])
+@require_permission('personnel', 'read')
+def export_employees():
+    """导出职工花名册"""
+    db = get_db()
+    keyword = request.args.get('keyword', '')
+    dept = request.args.get('department', '')
+    status = request.args.get('status', '')
+    
+    conditions = []
+    params = []
+    if keyword:
+        conditions.append("(name LIKE ? OR emp_no LIKE ?)")
+        params.extend([f'%{keyword}%', f'%{keyword}%'])
+    if dept:
+        conditions.append("id IN (SELECT emp_id FROM position_records WHERE department=? AND is_current=1)")
+        params.append(dept)
+    if status:
+        conditions.append("status=?")
+        params.append(status)
+    
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = db.execute(f"""SELECT e.*, 
+        (SELECT department FROM position_records WHERE emp_id=e.id AND is_current=1) as current_dept,
+        (SELECT position FROM position_records WHERE emp_id=e.id AND is_current=1) as current_position,
+        (SELECT title_name FROM title_records WHERE emp_id=e.id AND is_current=1) as current_title
+        FROM employees e{where} ORDER BY e.emp_no""", params).fetchall()
+    
+    employees = []
+    for r in rows:
+        d = dict(r)
+        d['phone'] = aes_decrypt(d.get('phone_encrypted', ''))
+        if d['phone'] and len(d['phone']) > 7:
+            d['phone_display'] = d['phone'][:3] + '****' + d['phone'][-4:]
+        else:
+            d['phone_display'] = d['phone']
+        employees.append(d)
+    
+    excel_file = export_employees_to_excel(employees)
+    return send_file(
+        excel_file,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=f'职工花名册_{datetime.datetime.now().strftime("%Y%m%d")}.xlsx'
+    )
+
+@app.route('/api/employees/import', methods=['POST'])
+@require_permission('personnel', 'write')
+def import_employees():
+    """从Excel导入职工信息"""
+    if 'file' not in request.files:
+        return jsonify({'error': '请上传文件'}), 400
+    
+    file = request.files['file']
+    if not file.filename.endswith(('.xlsx', '.xls')):
+        return jsonify({'error': '请上传Excel文件'}), 400
+    
+    try:
+        employees = import_employees_from_excel(file.stream)
+        db = get_db()
+        success_count = 0
+        error_count = 0
+        errors = []
+        
+        for emp in employees:
+            try:
+                db.execute("""INSERT INTO employees 
+                    (emp_no, name, gender, birth_date, phone_encrypted, email, ethnicity, 
+                     political_status, marital_status, native_place, status, entry_date)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '在职', ?)""",
+                           (emp['emp_no'], emp['name'], emp.get('gender'), emp.get('birth_date'),
+                            aes_encrypt(emp.get('phone', '')), emp.get('email'), emp.get('ethnicity', '汉'),
+                            emp.get('political_status', '群众'), emp.get('marital_status', '未婚'),
+                            emp.get('native_place', ''), emp.get('entry_date')))
+                success_count += 1
+            except sqlite3.IntegrityError:
+                error_count += 1
+                errors.append(f"工号 {emp['emp_no']} 已存在")
+            except Exception as e:
+                error_count += 1
+                errors.append(f"工号 {emp['emp_no']}: {str(e)}")
+        
+        db.commit()
+        log_operation('导入职工', 'personnel', f'成功{success_count}条，失败{error_count}条')
+        return jsonify({
+            'ok': True,
+            'success_count': success_count,
+            'error_count': error_count,
+            'errors': errors[:10]  # 最多返回10条错误信息
+        })
+    except Exception as e:
+        return jsonify({'error': f'导入失败: {str(e)}'}), 500
+
+@app.route('/api/salary/records/export', methods=['GET'])
+@require_permission('salary', 'read')
+def export_salary_records():
+    """导出工资表"""
+    month = request.args.get('month', '')
+    dept = request.args.get('department', '')
+    
+    db = get_db()
+    conditions = []
+    params = []
+    if month:
+        conditions.append("s.month=?")
+        params.append(month)
+    if dept:
+        conditions.append("(SELECT department FROM position_records WHERE emp_id=e.id AND is_current=1)=?")
+        params.append(dept)
+    
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = db.execute(f"""SELECT s.*, e.name, e.emp_no,
+        (SELECT department FROM position_records WHERE emp_id=e.id AND is_current=1) as dept
+        FROM salary_records s JOIN employees e ON s.emp_id=e.id{where} ORDER BY s.month DESC, e.emp_no""", params).fetchall()
+    
+    salary_records = [dict(r) for r in rows]
+    excel_file = export_salary_to_excel(salary_records)
+    
+    filename = f'工资表_{month if month else "全部"}_{datetime.datetime.now().strftime("%Y%m%d")}.xlsx'
+    return send_file(
+        excel_file,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=filename
+    )
+
+@app.route('/api/perf/export', methods=['GET'])
+@require_permission('performance', 'read')
+def export_performance():
+    """导出绩效结果"""
+    period = request.args.get('period', '')
+    
+    db = get_db()
+    conditions = []
+    params = []
+    if period:
+        conditions.append("pa.period=?")
+        params.append(period)
+    
+    where = " WHERE " + " AND ".join(conditions) if conditions else ""
+    rows = db.execute(f"""SELECT pa.*, e.name, e.emp_no, pt.name as template_name,
+        (SELECT department FROM position_records WHERE emp_id=e.id AND is_current=1) as dept
+        FROM perf_assessments pa JOIN employees e ON pa.emp_id=e.id 
+        JOIN perf_templates pt ON pa.template_id=pt.id{where} ORDER BY pa.period DESC""", params).fetchall()
+    
+    assessments = [dict(r) for r in rows]
+    excel_file = export_performance_to_excel(assessments)
+    
+    filename = f'绩效考核_{period if period else "全部"}_{datetime.datetime.now().strftime("%Y%m%d")}.xlsx'
+    return send_file(
+        excel_file,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        as_attachment=True,
+        download_name=filename
+    )
+
+# ============================================================
+# 工资项目管理 API
+# ============================================================
+@app.route('/api/salary-items', methods=['GET', 'POST'])
+@require_permission('salary', 'write')
+def salary_items():
+    """获取或创建工资项目"""
+    db = get_db()
+    if request.method == 'GET':
+        rows = db.execute("SELECT * FROM salary_items ORDER BY sort_order, id").fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            # 加载默认值
+            defaults = db.execute("SELECT * FROM salary_item_defaults WHERE item_id=?", (d['id'],)).fetchall()
+            d['defaults'] = [dict(x) for x in defaults]
+            result.append(d)
+        return jsonify(result)
+    
+    data = request.json or {}
+    if not data.get('item_name') or not data.get('item_code'):
+        return jsonify({'error': '项目名称和编码不能为空'}), 400
+    
+    try:
+        db.execute("""INSERT INTO salary_items 
+            (item_name, item_code, item_type, calculation_method, formula, is_taxable, is_visible, sort_order, is_active, description)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (data['item_name'], data['item_code'], data.get('item_type', '固定项'),
+                    data.get('calculation_method'), data.get('formula'),
+                    data.get('is_taxable', 1), data.get('is_visible', 1),
+                    data.get('sort_order', 0), data.get('is_active', 1), data.get('description')))
+        db.commit()
+        log_operation('创建工资项目', 'salary', data['item_name'])
+        return jsonify({'ok': True})
+    except sqlite3.IntegrityError:
+        return jsonify({'error': '项目编码已存在'}), 400
+
+@app.route('/api/salary-items/<int:item_id>', methods=['PUT', 'DELETE'])
+@require_permission('salary', 'write')
+def update_salary_item(item_id):
+    """更新或删除工资项目"""
+    db = get_db()
+    if request.method == 'DELETE':
+        db.execute("DELETE FROM salary_items WHERE id=?", (item_id,))
+        db.execute("DELETE FROM salary_item_defaults WHERE item_id=?", (item_id,))
+        db.commit()
+        log_operation('删除工资项目', 'salary', f'ID:{item_id}')
+        return jsonify({'ok': True})
+    
+    data = request.json or {}
+    db.execute("""UPDATE salary_items SET item_name=?, item_type=?, calculation_method=?, formula=?,
+        is_taxable=?, is_visible=?, sort_order=?, is_active=?, description=? WHERE id=?""",
+               (data['item_name'], data.get('item_type', '固定项'), data.get('calculation_method'),
+                data.get('formula'), data.get('is_taxable', 1), data.get('is_visible', 1),
+                data.get('sort_order', 0), data.get('is_active', 1), data.get('description'), item_id))
+    db.commit()
+    log_operation('更新工资项目', 'salary', data['item_name'])
+    return jsonify({'ok': True})
+
+@app.route('/api/salary-items/<int:item_id>/defaults', methods=['GET', 'POST'])
+@require_permission('salary', 'write')
+def salary_item_defaults(item_id):
+    """获取或设置工资项目默认值"""
+    db = get_db()
+    if request.method == 'GET':
+        rows = db.execute("SELECT * FROM salary_item_defaults WHERE item_id=?", (item_id,)).fetchall()
+        return jsonify([dict(r) for r in rows])
+    
+    data = request.json or {}
+    db.execute("""INSERT OR REPLACE INTO salary_item_defaults (item_id, department, title_level, default_value)
+        VALUES (?, ?, ?, ?)""",
+               (item_id, data.get('department'), data.get('title_level'), data.get('default_value', 0)))
+    db.commit()
+    return jsonify({'ok': True})
+
+# ============================================================
+# 绩效管理项目 API
+# ============================================================
+@app.route('/api/perf-categories', methods=['GET', 'POST'])
+@require_permission('performance', 'write')
+def perf_categories():
+    """获取或创建绩效分类"""
+    db = get_db()
+    if request.method == 'GET':
+        rows = db.execute("SELECT * FROM perf_categories WHERE is_active=1 ORDER BY sort_order, id").fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            # 加载指标
+            indicators = db.execute("SELECT * FROM perf_indicators WHERE category_id=? AND is_active=1 ORDER BY sort_order", (d['id'],)).fetchall()
+            d['indicators'] = [dict(x) for x in indicators]
+            result.append(d)
+        return jsonify(result)
+    
+    data = request.json or {}
+    if not data.get('category_name') or not data.get('category_code'):
+        return jsonify({'error': '分类名称和编码不能为空'}), 400
+    
+    try:
+        db.execute("""INSERT INTO perf_categories (category_name, category_code, weight, description, sort_order, is_active)
+            VALUES (?, ?, ?, ?, ?, ?)""",
+                   (data['category_name'], data['category_code'], data.get('weight', 0),
+                    data.get('description'), data.get('sort_order', 0), data.get('is_active', 1)))
+        db.commit()
+        log_operation('创建绩效分类', 'performance', data['category_name'])
+        return jsonify({'ok': True})
+    except sqlite3.IntegrityError:
+        return jsonify({'error': '分类编码已存在'}), 400
+
+@app.route('/api/perf-categories/<int:cat_id>', methods=['PUT', 'DELETE'])
+@require_permission('performance', 'write')
+def update_perf_category(cat_id):
+    """更新或删除绩效分类"""
+    db = get_db()
+    if request.method == 'DELETE':
+        db.execute("UPDATE perf_categories SET is_active=0 WHERE id=?", (cat_id,))
+        db.execute("UPDATE perf_indicators SET is_active=0 WHERE category_id=?", (cat_id,))
+        db.commit()
+        log_operation('删除绩效分类', 'performance', f'ID:{cat_id}')
+        return jsonify({'ok': True})
+    
+    data = request.json or {}
+    db.execute("""UPDATE perf_categories SET category_name=?, weight=?, description=?, sort_order=?, is_active=? WHERE id=?""",
+               (data['category_name'], data.get('weight', 0), data.get('description'),
+                data.get('sort_order', 0), data.get('is_active', 1), cat_id))
+    db.commit()
+    log_operation('更新绩效分类', 'performance', data['category_name'])
+    return jsonify({'ok': True})
+
+@app.route('/api/perf-indicators', methods=['GET', 'POST'])
+@require_permission('performance', 'write')
+def perf_indicators():
+    """获取或创建绩效指标"""
+    db = get_db()
+    if request.method == 'GET':
+        cat_id = request.args.get('category_id', '')
+        if cat_id:
+            rows = db.execute("SELECT * FROM perf_indicators WHERE category_id=? AND is_active=1 ORDER BY sort_order", (cat_id,)).fetchall()
+        else:
+            rows = db.execute("SELECT * FROM perf_indicators WHERE is_active=1 ORDER BY category_id, sort_order").fetchall()
+        return jsonify([dict(r) for r in rows])
+    
+    data = request.json or {}
+    if not data.get('indicator_name') or not data.get('indicator_code'):
+        return jsonify({'error': '指标名称和编码不能为空'}), 400
+    
+    try:
+        db.execute("""INSERT INTO perf_indicators 
+            (indicator_name, indicator_code, category_id, scoring_method, max_score, weight, description, sort_order, is_active)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   (data['indicator_name'], data['indicator_code'], data.get('category_id'),
+                    data.get('scoring_method', '百分制'), data.get('max_score', 100),
+                    data.get('weight', 0), data.get('description'), data.get('sort_order', 0), data.get('is_active', 1)))
+        db.commit()
+        log_operation('创建绩效指标', 'performance', data['indicator_name'])
+        return jsonify({'ok': True})
+    except sqlite3.IntegrityError:
+        return jsonify({'error': '指标编码已存在'}), 400
+
+@app.route('/api/perf-indicators/<int:ind_id>', methods=['PUT', 'DELETE'])
+@require_permission('performance', 'write')
+def update_perf_indicator(ind_id):
+    """更新或删除绩效指标"""
+    db = get_db()
+    if request.method == 'DELETE':
+        db.execute("UPDATE perf_indicators SET is_active=0 WHERE id=?", (ind_id,))
+        db.commit()
+        log_operation('删除绩效指标', 'performance', f'ID:{ind_id}')
+        return jsonify({'ok': True})
+    
+    data = request.json or {}
+    db.execute("""UPDATE perf_indicators SET indicator_name=?, category_id=?, scoring_method=?, max_score=?,
+        weight=?, description=?, sort_order=?, is_active=? WHERE id=?""",
+               (data['indicator_name'], data.get('category_id'), data.get('scoring_method', '百分制'),
+                data.get('max_score', 100), data.get('weight', 0), data.get('description'),
+                data.get('sort_order', 0), data.get('is_active', 1), ind_id))
+    db.commit()
+    log_operation('更新绩效指标', 'performance', data['indicator_name'])
+    return jsonify({'ok': True})
+
+# ============================================================
 # 系统管理 API
 # ============================================================
 @app.route('/api/users', methods=['GET', 'POST'])
@@ -1168,10 +2001,22 @@ def manage_users():
         rows = db.execute("SELECT id, username, real_name, role, department, is_active, last_login FROM users").fetchall()
         return jsonify([dict(r) for r in rows])
     data = request.json or {}
-    pw_hash = hashlib.sha256(data.get('password', '123456').encode()).hexdigest()
+    
+    # 验证必填字段
+    if not data.get('username') or not data.get('real_name'):
+        return jsonify({'error': '用户名和姓名不能为空'}), 400
+    
+    # 验证密码强度
+    password = data.get('password', '123456')
+    is_valid, msg = validate_password(password)
+    if not is_valid:
+        return jsonify({'error': msg}), 400
+    
+    pw_hash = hashlib.sha256(password.encode()).hexdigest()
     db.execute("INSERT INTO users (username, password_hash, real_name, role, department) VALUES (?, ?, ?, ?, ?)",
                (data['username'], pw_hash, data['real_name'], data.get('role', 'staff'), data.get('department')))
     db.commit()
+    log_operation('创建用户', 'system', f"{data['username']}")
     return jsonify({'ok': True})
 
 @app.route('/api/operation_logs', methods=['GET'])

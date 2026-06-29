@@ -755,8 +755,23 @@ async function renderPerfRules() {
 // 系统设置
 // ============================================================
 async function loadSettings() {
-  const users = await apiFetch('/users');
-  let html = `<div class="card"><div class="card-header"><h3>用户管理</h3><button class="btn btn-sm btn-primary" onclick="showAddUser()">+ 新增用户</button></div>
+  let html = `
+    <div class="card">
+      <div class="card-header"><h3>自定义字段管理</h3><button class="btn btn-sm btn-primary" onclick="showAddCustomField()">+ 新增字段</button></div>
+      <div class="table-wrap"><table><thead><tr><th>字段名称</th><th>字段编码</th><th>类型</th><th>适用科室</th><th>必填</th><th>状态</th><th>操作</th></tr></thead><tbody id="custom-fields-body"></tbody></table></div>
+    </div>`;
+  
+  html += `<div class="card">
+      <div class="card-header"><h3>工资项目管理</h3><button class="btn btn-sm btn-primary" onclick="showAddSalaryItem()">+ 新增项目</button></div>
+      <div class="table-wrap"><table><thead><tr><th>项目名称</th><th>项目编码</th><th>类型</th><th>计税</th><th>显示</th><th>状态</th><th>操作</th></tr></thead><tbody id="salary-items-body"></tbody></table></div>
+    </div>`;
+  
+  html += `<div class="card">
+      <div class="card-header"><h3>绩效管理分类</h3><button class="btn btn-sm btn-primary" onclick="showAddPerfCategory()">+ 新增分类</button></div>
+      <div class="table-wrap"><table><thead><tr><th>分类名称</th><th>分类编码</th><th>权重</th><th>指标数</th><th>状态</th><th>操作</th></tr></thead><tbody id="perf-categories-body"></tbody></table></div>
+    </div>`;
+  
+  html += `<div class="card"><div class="card-header"><h3>用户管理</h3><button class="btn btn-sm btn-primary" onclick="showAddUser()">+ 新增用户</button></div>
     <div class="table-wrap"><table><thead><tr><th>用户名</th><th>姓名</th><th>角色</th><th>科室</th><th>最后登录</th><th>状态</th></tr></thead><tbody>`;
   if (users) users.forEach(u => {
     html += `<tr><td>${escHtml(u.username)}</td><td>${escHtml(u.real_name)}</td>
@@ -769,6 +784,21 @@ async function loadSettings() {
     <div class="table-wrap"><table><thead><tr><th>时间</th><th>用户</th><th>操作</th><th>模块</th><th>详情</th></tr></thead><tbody id="settings-log-body"></tbody></table></div></div>`;
   
   document.getElementById('main-content').innerHTML = html;
+  
+  // 加载自定义字段
+  loadCustomFields();
+  
+  // 加载工资项目
+  loadSalaryItems();
+  
+  // 加载绩效分类
+  loadPerfCategories();
+  
+  // 加载用户列表
+  const users = await apiFetch('/users');
+  if (users) {
+    // 用户表格已渲染
+  }
   
   const logs = await apiFetch('/operation_logs?limit=20');
   if (logs) {
@@ -797,6 +827,408 @@ async function saveNewUser() {
   const res = await apiFetch('/users', {method:'POST', body:JSON.stringify(data)});
   if (res && res.ok) { hideModal(); loadSettings(); }
   else alert(res?.error || '创建失败');
+}
+
+// ============================================================
+// 自定义字段管理
+// ============================================================
+async function loadCustomFields() {
+  const fields = await apiFetch('/custom-fields');
+  if (!fields) return;
+  
+  const tbody = document.getElementById('custom-fields-body');
+  if (!tbody) return;
+  
+  tbody.innerHTML = fields.map(f => `
+    <tr>
+      <td>${escHtml(f.field_name)}</td>
+      <td><code>${escHtml(f.field_code)}</code></td>
+      <td><span class="tag tag-primary">${f.field_type}</span></td>
+      <td>${f.department ? escHtml(f.department) : '<span style="color:#999">全部</span>'}</td>
+      <td>${f.is_required ? '<span class="tag tag-danger">必填</span>' : '<span style="color:#999">选填</span>'}</td>
+      <td>${f.is_active ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-warning">禁用</span>'}</td>
+      <td>
+        <button class="btn btn-sm" onclick="editCustomField(${f.id})">编辑</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteCustomField(${f.id})">删除</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function showAddCustomField() {
+  showModal('新增自定义字段', `
+    <div class="form-row">
+      <div class="form-group"><label>字段名称 *</label><input id="cf-field-name" placeholder="如：专业特长"></div>
+      <div class="form-group"><label>字段编码 *</label><input id="cf-field-code" placeholder="如：specialty"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>字段类型</label><select id="cf-field-type">
+        <option value="text">文本</option>
+        <option value="number">数字</option>
+        <option value="date">日期</option>
+        <option value="select">下拉选择</option>
+        <option value="textarea">多行文本</option>
+      </select></div>
+      <div class="form-group"><label>适用科室</label><input id="cf-department" placeholder="留空表示全部科室"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>选项(仅下拉选择)</label><input id="cf-options" placeholder="用逗号分隔，如：内科,外科,儿科"></div>
+      <div class="form-group"><label>排序</label><input id="cf-sort-order" type="number" value="0"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>是否必填</label><select id="cf-required"><option value="0">否</option><option value="1">是</option></select></div>
+      <div class="form-group"><label>状态</label><select id="cf-active"><option value="1">启用</option><option value="0">禁用</option></select></div>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveCustomField()">保存</button><button class="btn" onclick="hideModal()">取消</button></div>
+  `, 600);
+}
+
+async function saveCustomField(id=null) {
+  const data = {
+    field_name: document.getElementById('cf-field-name').value,
+    field_code: document.getElementById('cf-field-code').value,
+    field_type: document.getElementById('cf-field-type').value,
+    department: document.getElementById('cf-department').value || null,
+    is_required: parseInt(document.getElementById('cf-required').value),
+    sort_order: parseInt(document.getElementById('cf-sort-order').value),
+    is_active: parseInt(document.getElementById('cf-active').value),
+  };
+  
+  // 处理选项
+  const optionsStr = document.getElementById('cf-options').value;
+  if (optionsStr && data.field_type === 'select') {
+    data.options = optionsStr.split(',').map(s => s.trim()).filter(s => s);
+  }
+  
+  const url = id ? `/custom-fields/${id}` : '/custom-fields';
+  const method = id ? 'PUT' : 'POST';
+  
+  const res = await apiFetch(url, {method, body:JSON.stringify(data)});
+  if (res && res.ok) {
+    hideModal();
+    loadCustomFields();
+  } else {
+    alert(res?.error || '操作失败');
+  }
+}
+
+async function editCustomField(id) {
+  const fields = await apiFetch('/custom-fields');
+  const field = fields.find(f => f.id === id);
+  if (!field) return;
+  
+  showModal('编辑自定义字段', `
+    <div class="form-row">
+      <div class="form-group"><label>字段名称 *</label><input id="cf-field-name" value="${escHtml(field.field_name)}"></div>
+      <div class="form-group"><label>字段编码 *</label><input id="cf-field-code" value="${escHtml(field.field_code)}" ${field.field_code.match(/^builtin_/) ? 'disabled' : ''}></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>字段类型</label><select id="cf-field-type">
+        <option value="text" ${field.field_type==='text'?'selected':''}>文本</option>
+        <option value="number" ${field.field_type==='number'?'selected':''}>数字</option>
+        <option value="date" ${field.field_type==='date'?'selected':''}>日期</option>
+        <option value="select" ${field.field_type==='select'?'selected':''}>下拉选择</option>
+        <option value="textarea" ${field.field_type==='textarea'?'selected':''}>多行文本</option>
+      </select></div>
+      <div class="form-group"><label>适用科室</label><input id="cf-department" value="${escHtml(field.department||'')}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>选项(仅下拉选择)</label><input id="cf-options" value="${Array.isArray(field.options)?field.options.join(','):(field.options||'')}"></div>
+      <div class="form-group"><label>排序</label><input id="cf-sort-order" type="number" value="${field.sort_order||0}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>是否必填</label><select id="cf-required"><option value="0" ${!field.is_required?'selected':''}>否</option><option value="1" ${field.is_required?'selected':''}>是</option></select></div>
+      <div class="form-group"><label>状态</label><select id="cf-active"><option value="1" ${field.is_active?'selected':''}>启用</option><option value="0" ${!field.is_active?'selected':''}>禁用</option></select></div>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveCustomField(${id})">保存</button><button class="btn" onclick="hideModal()">取消</button></div>
+  `, 600);
+}
+
+async function deleteCustomField(id) {
+  if (!confirm('确定要删除这个字段吗？')) return;
+  const res = await apiFetch(`/custom-fields/${id}`, {method:'DELETE'});
+  if (res && res.ok) {
+    loadCustomFields();
+  } else {
+    alert(res?.error || '删除失败');
+  }
+}
+
+// ============================================================
+// 工资项目管理
+// ============================================================
+async function loadSalaryItems() {
+  const items = await apiFetch('/salary-items');
+  if (!items) return;
+  
+  const tbody = document.getElementById('salary-items-body');
+  if (!tbody) return;
+  
+  tbody.innerHTML = items.map(item => `
+    <tr>
+      <td>${escHtml(item.item_name)}</td>
+      <td><code>${escHtml(item.item_code)}</code></td>
+      <td><span class="tag tag-primary">${item.item_type}</span></td>
+      <td>${item.is_taxable ? '<span class="tag tag-success">是</span>' : '<span style="color:#999">否</span>'}</td>
+      <td>${item.is_visible ? '<span class="tag tag-success">是</span>' : '<span style="color:#999">否</span>'}</td>
+      <td>${item.is_active ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-warning">禁用</span>'}</td>
+      <td>
+        <button class="btn btn-sm" onclick="editSalaryItem(${item.id})">编辑</button>
+        <button class="btn btn-sm btn-danger" onclick="deleteSalaryItem(${item.id})">删除</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function showAddSalaryItem() {
+  showModal('新增工资项目', `
+    <div class="form-row">
+      <div class="form-group"><label>项目名称 *</label><input id="si-item-name" placeholder="如：基本工资"></div>
+      <div class="form-group"><label>项目编码 *</label><input id="si-item-code" placeholder="如：base_salary"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>项目类型</label><select id="si-item-type">
+        <option value="固定项">固定项</option>
+        <option value="浮动项">浮动项</option>
+        <option value="扣款项">扣款项</option>
+      </select></div>
+      <div class="form-group"><label>计算方式</label><select id="si-calc-method">
+        <option value="固定值">固定值</option>
+        <option value="公式">公式</option>
+        <option value="百分比">百分比</option>
+      </select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>计算公式</label><input id="si-formula" placeholder="如：base*1.2"></div>
+      <div class="form-group"><label>排序</label><input id="si-sort-order" type="number" value="0"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>是否计税</label><select id="si-taxable"><option value="1">是</option><option value="0">否</option></select></div>
+      <div class="form-group"><label>是否显示</label><select id="si-visible"><option value="1">是</option><option value="0">否</option></select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>状态</label><select id="si-active"><option value="1">启用</option><option value="0">禁用</option></select></div>
+      <div class="form-group"><label>描述</label><input id="si-description" placeholder="可选"></div>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveSalaryItem()">保存</button><button class="btn" onclick="hideModal()">取消</button></div>
+  `, 600);
+}
+
+async function saveSalaryItem(id=null) {
+  const data = {
+    item_name: document.getElementById('si-item-name').value,
+    item_code: document.getElementById('si-item-code').value,
+    item_type: document.getElementById('si-item-type').value,
+    calculation_method: document.getElementById('si-calc-method').value,
+    formula: document.getElementById('si-formula').value || null,
+    is_taxable: parseInt(document.getElementById('si-taxable').value),
+    is_visible: parseInt(document.getElementById('si-visible').value),
+    sort_order: parseInt(document.getElementById('si-sort-order').value),
+    is_active: parseInt(document.getElementById('si-active').value),
+    description: document.getElementById('si-description').value || null,
+  };
+  
+  const url = id ? `/salary-items/${id}` : '/salary-items';
+  const method = id ? 'PUT' : 'POST';
+  
+  const res = await apiFetch(url, {method, body:JSON.stringify(data)});
+  if (res && res.ok) {
+    hideModal();
+    loadSalaryItems();
+  } else {
+    alert(res?.error || '操作失败');
+  }
+}
+
+async function editSalaryItem(id) {
+  const items = await apiFetch('/salary-items');
+  const item = items.find(i => i.id === id);
+  if (!item) return;
+  
+  showModal('编辑工资项目', `
+    <div class="form-row">
+      <div class="form-group"><label>项目名称 *</label><input id="si-item-name" value="${escHtml(item.item_name)}"></div>
+      <div class="form-group"><label>项目编码 *</label><input id="si-item-code" value="${escHtml(item.item_code)}" disabled></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>项目类型</label><select id="si-item-type">
+        <option value="固定项" ${item.item_type==='固定项'?'selected':''}>固定项</option>
+        <option value="浮动项" ${item.item_type==='浮动项'?'selected':''}>浮动项</option>
+        <option value="扣款项" ${item.item_type==='扣款项'?'selected':''}>扣款项</option>
+      </select></div>
+      <div class="form-group"><label>计算方式</label><select id="si-calc-method">
+        <option value="固定值" ${item.calculation_method==='固定值'?'selected':''}>固定值</option>
+        <option value="公式" ${item.calculation_method==='公式'?'selected':''}>公式</option>
+        <option value="百分比" ${item.calculation_method==='百分比'?'selected':''}>百分比</option>
+      </select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>计算公式</label><input id="si-formula" value="${escHtml(item.formula||'')}"></div>
+      <div class="form-group"><label>排序</label><input id="si-sort-order" type="number" value="${item.sort_order||0}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>是否计税</label><select id="si-taxable"><option value="1" ${item.is_taxable?'selected':''}>是</option><option value="0" ${!item.is_taxable?'selected':''}>否</option></select></div>
+      <div class="form-group"><label>是否显示</label><select id="si-visible"><option value="1" ${item.is_visible?'selected':''}>是</option><option value="0" ${!item.is_visible?'selected':''}>否</option></select></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>状态</label><select id="si-active"><option value="1" ${item.is_active?'selected':''}>启用</option><option value="0" ${!item.is_active?'selected':''}>禁用</option></select></div>
+      <div class="form-group"><label>描述</label><input id="si-description" value="${escHtml(item.description||'')}"></div>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" onclick="saveSalaryItem(${id})">保存</button><button class="btn" onclick="hideModal()">取消</button></div>
+  `, 600);
+}
+
+async function deleteSalaryItem(id) {
+  if (!confirm('确定要删除这个项目吗？')) return;
+  const res = await apiFetch(`/salary-items/${id}`, {method:'DELETE'});
+  if (res && res.ok) {
+    loadSalaryItems();
+  } else {
+    alert(res?.error || '删除失败');
+  }
+}
+
+// ============================================================
+// 绩效管理分类
+// ============================================================
+async function loadPerfCategories() {
+  const categories = await apiFetch('/perf-categories');
+  if (!categories) return;
+  
+  const tbody = document.getElementById('perf-categories-body');
+  if (!tbody) return;
+  
+  tbody.innerHTML = categories.map(cat => `
+    <tr>
+      <td>${escHtml(cat.category_name)}</td>
+      <td><code>${escHtml(cat.category_code)}</code></td>
+      <td>${cat.weight ? cat.weight + '%' : '--'}</td>
+      <td>${cat.indicators ? cat.indicators.length : 0}</td>
+      <td>${cat.is_active ? '<span class="tag tag-success">启用</span>' : '<span class="tag tag-warning">禁用</span>'}</td>
+      <td>
+        <button class="btn btn-sm" onclick="editPerfCategory(${cat.id})">编辑</button>
+        <button class="btn btn-sm" onclick="showAddPerfIndicator(${cat.id})">+ 指标</button>
+        <button class="btn btn-sm btn-danger" onclick="deletePerfCategory(${cat.id})">删除</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+function showAddPerfCategory() {
+  showModal('新增绩效分类', `
+    <div class="form-row">
+      <div class="form-group"><label>分类名称 *</label><input id="pc-category-name" placeholder="如：工作业绩"></div>
+      <div class="form-group"><label>分类编码 *</label><input id="pc-category-code" placeholder="如：performance"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>权重(%)</label><input id="pc-weight" type="number" value="0" min="0" max="100"></div>
+      <div class="form-group"><label>排序</label><input id="pc-sort-order" type="number" value="0"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>描述</label><textarea id="pc-description" rows="3"></textarea></div>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" onclick="savePerfCategory()">保存</button><button class="btn" onclick="hideModal()">取消</button></div>
+  `, 500);
+}
+
+async function savePerfCategory(id=null) {
+  const data = {
+    category_name: document.getElementById('pc-category-name').value,
+    category_code: document.getElementById('pc-category-code').value,
+    weight: parseFloat(document.getElementById('pc-weight').value) || 0,
+    sort_order: parseInt(document.getElementById('pc-sort-order').value),
+    description: document.getElementById('pc-description').value || null,
+    is_active: 1,
+  };
+  
+  const url = id ? `/perf-categories/${id}` : '/perf-categories';
+  const method = id ? 'PUT' : 'POST';
+  
+  const res = await apiFetch(url, {method, body:JSON.stringify(data)});
+  if (res && res.ok) {
+    hideModal();
+    loadPerfCategories();
+  } else {
+    alert(res?.error || '操作失败');
+  }
+}
+
+async function editPerfCategory(id) {
+  const categories = await apiFetch('/perf-categories');
+  const cat = categories.find(c => c.id === id);
+  if (!cat) return;
+  
+  showModal('编辑绩效分类', `
+    <div class="form-row">
+      <div class="form-group"><label>分类名称 *</label><input id="pc-category-name" value="${escHtml(cat.category_name)}"></div>
+      <div class="form-group"><label>分类编码 *</label><input id="pc-category-code" value="${escHtml(cat.category_code)}" disabled></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>权重(%)</label><input id="pc-weight" type="number" value="${cat.weight||0}" min="0" max="100"></div>
+      <div class="form-group"><label>排序</label><input id="pc-sort-order" type="number" value="${cat.sort_order||0}"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>描述</label><textarea id="pc-description" rows="3">${escHtml(cat.description||'')}</textarea></div>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" onclick="savePerfCategory(${id})">保存</button><button class="btn" onclick="hideModal()">取消</button></div>
+  `, 500);
+}
+
+async function deletePerfCategory(id) {
+  if (!confirm('确定要删除这个分类吗？关联的指标也会被禁用。')) return;
+  const res = await apiFetch(`/perf-categories/${id}`, {method:'DELETE'});
+  if (res && res.ok) {
+    loadPerfCategories();
+  } else {
+    alert(res?.error || '删除失败');
+  }
+}
+
+function showAddPerfIndicator(categoryId) {
+  showModal('新增绩效指标', `
+    <div class="form-row">
+      <div class="form-group"><label>指标名称 *</label><input id="pi-indicator-name" placeholder="如：门诊量"></div>
+      <div class="form-group"><label>指标编码 *</label><input id="pi-indicator-code" placeholder="如：outpatient_count"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>评分方式</label><select id="pi-scoring-method">
+        <option value="百分制">百分制</option>
+        <option value="等级制">等级制</option>
+        <option value="定量">定量</option>
+      </select></div>
+      <div class="form-group"><label>满分</label><input id="pi-max-score" type="number" value="100"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>权重(%)</label><input id="pi-weight" type="number" value="0" min="0" max="100"></div>
+      <div class="form-group"><label>排序</label><input id="pi-sort-order" type="number" value="0"></div>
+    </div>
+    <div class="form-row">
+      <div class="form-group"><label>描述</label><textarea id="pi-description" rows="3"></textarea></div>
+    </div>
+    <div class="form-actions"><button class="btn btn-primary" onclick="savePerfIndicator(${categoryId})">保存</button><button class="btn" onclick="hideModal()">取消</button></div>
+  `, 500);
+}
+
+async function savePerfIndicator(categoryId) {
+  const data = {
+    indicator_name: document.getElementById('pi-indicator-name').value,
+    indicator_code: document.getElementById('pi-indicator-code').value,
+    category_id: categoryId,
+    scoring_method: document.getElementById('pi-scoring-method').value,
+    max_score: parseFloat(document.getElementById('pi-max-score').value) || 100,
+    weight: parseFloat(document.getElementById('pi-weight').value) || 0,
+    sort_order: parseInt(document.getElementById('pi-sort-order').value),
+    description: document.getElementById('pi-description').value || null,
+    is_active: 1,
+  };
+  
+  const res = await apiFetch('/perf-indicators', {method:'POST', body:JSON.stringify(data)});
+  if (res && res.ok) {
+    hideModal();
+    loadPerfCategories();
+  } else {
+    alert(res?.error || '操作失败');
+  }
 }
 
 // ============================================================
