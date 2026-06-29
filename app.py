@@ -12,11 +12,16 @@ from flask import Flask, request, jsonify, send_file, g, session, render_templat
 from utils.excel_handler import export_employees_to_excel, import_employees_from_excel, export_salary_to_excel, export_performance_to_excel
 from utils.validators import validate_email, validate_phone, validate_password, sanitize_string, validate_date
 from utils.rate_limiter import rate_limit, login_rate_limit
+from utils.pdf_generator import generate_salary_slip, generate_batch_salary_slips
+from utils.backup_manager import BackupManager
+from config import Config
+from routes_hr_modules import register_hr_modules
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dlhr_2026_secret_key_aes256')
 
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'data', 'hospital_hr.db')
+# 使用Config中的数据库路径
+DB_PATH = Config.DB_PATH
 
 # ============================================================
 # AES 简易加密（敏感字段加密存储）
@@ -2169,6 +2174,182 @@ def operation_logs():
     return jsonify([dict(r) for r in rows])
 
 # ============================================================
+# PDF工资条生成 API
+# ============================================================
+@app.route('/api/salary/slips/generate', methods=['POST'])
+@require_permission('salary', 'write')
+def generate_salary_slips():
+    """生成工资条PDF"""
+    data = request.json or {}
+    month = data.get('month', '')
+    emp_ids = data.get('emp_ids', [])  # 可选，指定职工
+    
+    if not month:
+        return jsonify({'error': '请指定工资月份'}), 400
+    
+    db = get_db()
+    
+    # 查询工资记录
+    conditions = ["s.month=?"]
+    params = [month]
+    
+    if emp_ids:
+        conditions.append("s.emp_id IN ({})".format(','.join(['?']*len(emp_ids))))
+        params.extend(emp_ids)
+    
+    where = " AND ".join(conditions)
+    rows = db.execute(f"""SELECT s.*, e.name, e.emp_no, e.current_dept as department,
+        e.current_position as position, e.current_title as title_level
+        FROM salary_records s JOIN employees e ON s.emp_id=e.id WHERE {where}""", params).fetchall()
+    
+    if not rows:
+        return jsonify({'error': '未找到工资记录'}), 404
+    
+    # 准备数据
+    salary_records_list = []
+    for r in rows:
+        d = dict(r)
+        employee_data = {
+            'emp_no': d['emp_no'],
+            'name': d['name'],
+            'department': d.get('department', ''),
+            'position': d.get('position', ''),
+            'title_level': d.get('title_level', ''),
+        }
+        salary_data = {
+            'base_salary': d.get('base_salary', 0),
+            'position_allowance': d.get('position_allowance', 0),
+            'medical_allowance': d.get('medical_allowance', 0),
+            'housing_allowance': d.get('housing_allowance', 0),
+            'night_shift_allowance': d.get('night_shift_allowance', 0),
+            'overtime_pay': d.get('overtime_pay', 0),
+            'performance_bonus': d.get('performance_bonus', 0),
+            'gross_salary': d.get('gross_salary', 0),
+            'pension_insurance': d.get('pension_insurance', 0),
+            'medical_insurance': d.get('medical_insurance', 0),
+            'unemployment_insurance': d.get('unemployment_insurance', 0),
+            'housing_fund': d.get('housing_fund', 0),
+            'income_tax': d.get('income_tax', 0),
+            'total_deduction': d.get('total_deduction', 0),
+            'net_salary': d.get('net_salary', 0),
+        }
+        salary_records_list.append({
+            'employee_data': employee_data,
+            'salary_data': salary_data,
+            'month': month,
+        })
+    
+    # 生成PDF
+    if len(salary_records_list) == 1:
+        # 单个工资条
+        record = salary_records_list[0]
+        pdf_buffer = generate_salary_slip(record['employee_data'], record['salary_data'], month)
+        filename = f"{record['employee_data']['emp_no']}_{month}_工资条.pdf"
+        return send_file(
+            pdf_buffer,
+            mimetype='application/pdf',
+            as_attachment=True,
+            download_name=filename
+        )
+    else:
+        # 批量生成ZIP
+        zip_buffer = generate_batch_salary_slips(salary_records_list)
+        filename = f"工资条_{month}_批量.zip"
+        return send_file(
+            zip_buffer,
+            mimetype='application/zip',
+            as_attachment=True,
+            download_name=filename
+        )
+
+# ============================================================
+# 数据备份管理 API
+# ============================================================
+@app.route('/api/backup/create', methods=['POST'])
+@require_permission('system', 'admin')
+def create_backup():
+    """创建数据备份"""
+    try:
+        manager = BackupManager(Config.DB_PATH, Config.BACKUP_DIR)
+        backup_type = request.json.get('type', 'full') if request.json else 'full'
+        backup_file = manager.create_backup(backup_type)
+        
+        log_operation('创建数据备份', 'system', os.path.basename(backup_file))
+        
+        return jsonify({
+            'ok': True,
+            'backup_file': os.path.basename(backup_file),
+            'size': os.path.getsize(backup_file),
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backup/list', methods=['GET'])
+@require_permission('system', 'admin')
+def list_backups():
+    """获取备份列表"""
+    try:
+        manager = BackupManager(Config.DB_PATH, Config.BACKUP_DIR)
+        backups = manager.list_backups()
+        return jsonify(backups)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backup/restore', methods=['POST'])
+@require_permission('system', 'admin')
+def restore_backup():
+    """恢复数据备份"""
+    data = request.json or {}
+    filename = data.get('filename', '')
+    
+    if not filename:
+        return jsonify({'error': '请指定备份文件'}), 400
+    
+    try:
+        manager = BackupManager(Config.DB_PATH, Config.BACKUP_DIR)
+        backup_file = os.path.join(Config.BACKUP_DIR, filename)
+        manager.restore_backup(backup_file)
+        
+        log_operation('恢复数据备份', 'system', filename)
+        
+        return jsonify({'ok': True, 'message': '数据恢复成功'})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backup/download/<filename>', methods=['GET'])
+@require_permission('system', 'admin')
+def download_backup(filename):
+    """下载备份文件"""
+    try:
+        manager = BackupManager(Config.DB_PATH, Config.BACKUP_DIR)
+        filepath = manager.download_backup(filename)
+        return send_file(
+            filepath,
+            mimetype='application/gzip',
+            as_attachment=True,
+            download_name=filename
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 404
+
+@app.route('/api/backup/cleanup', methods=['POST'])
+@require_permission('system', 'admin')
+def cleanup_backups():
+    """清理过期备份"""
+    data = request.json or {}
+    keep_days = data.get('keep_days', 30)
+    
+    try:
+        manager = BackupManager(Config.DB_PATH, Config.BACKUP_DIR)
+        deleted_count = manager.cleanup_old_backups(keep_days)
+        
+        log_operation('清理过期备份', 'system', f'删除{deleted_count}个')
+        
+        return jsonify({'ok': True, 'deleted_count': deleted_count})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================
 # 页面路由
 # ============================================================
 @app.route('/')
@@ -2180,4 +2361,9 @@ def index():
 # ============================================================
 if __name__ == '__main__':
     init_db()
+    
+    # 注册招聘、培训、离职管理模块
+    register_hr_modules(app, get_db, log_operation, require_permission, require_login)
+    print("✓ 人力资源管理模块已注册")
+    
     app.run(host='0.0.0.0', port=5000, debug=True)
