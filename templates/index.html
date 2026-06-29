@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>大理大学第一附属医院 - 智能人事系统</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <script async src="https://busuanzi.ibruce.info/busuanzi/2.3/busuanzi.pure.mini.js"></script>
+</head>
+<body>
+
+<!-- 登录页 -->
+<div id="login-page" class="login-page">
+  <div class="login-box">
+    <div class="logo-icon">H</div>
+    <h1>大理大学第一附属医院</h1>
+    <p class="subtitle">智能人事管理系统</p>
+    <input id="login-username" placeholder="用户名" value="admin">
+    <input id="login-password" type="password" placeholder="密码" value="admin123">
+    <button onclick="doLogin()">登 录</button>
+    <p id="login-error" class="error-msg"></p>
+  </div>
+</div>
+
+<!-- 主应用 -->
+<div id="app-page" class="app-layout" style="display:none">
+  <!-- 侧边栏 -->
+  <nav class="sidebar">
+    <div class="brand">
+      <h2>智能人事系统</h2>
+      <div class="sub">大理大学第一附属医院</div>
+    </div>
+    <div class="nav">
+      <div class="nav-item active" data-page="dashboard" onclick="loadPage('dashboard')"><span class="icon">📊</span>系统概览</div>
+      <div class="nav-divider"></div>
+      <div class="nav-item" data-page="personnel" onclick="loadPage('personnel')"><span class="icon">👤</span>人员信息</div>
+      <div class="nav-item" data-page="salary" onclick="loadPage('salary')"><span class="icon">💰</span>工资核算</div>
+      <div class="nav-item" data-page="performance" onclick="loadPage('performance')"><span class="icon">📈</span>绩效管理</div>
+      <div class="nav-divider"></div>
+      <div class="nav-item" data-page="settings" onclick="loadPage('settings')"><span class="icon">⚙</span>系统设置</div>
+    </div>
+    <div class="user-info">
+      <div class="name" id="sidebar-user-name">--</div>
+      <div class="role" id="sidebar-user-role">--</div>
+      <div style="margin-top:8px"><button class="btn btn-sm" onclick="logout()" style="color:rgba(255,255,255,.6);background:transparent;border-color:rgba(255,255,255,.2)">退出登录</button></div>
+    </div>
+  </nav>
+
+  <!-- 主内容区 -->
+  <main class="main">
+    <div class="topbar">
+      <div><span class="page-title" id="page-title">系统概览</span><br><span class="breadcrumb">大理大学第一附属医院 · 智能人事系统</span></div>
+      <div class="actions">
+        <span style="font-size:12px;color:#5f5e5a">访问量：<span id="busuanzi_value_site_uv">0</span></span>
+      </div>
+    </div>
+    <div class="content" id="main-content"></div>
+  </main>
+</div>
+
+<!-- 弹窗 -->
+<div id="modal-overlay" class="modal-overlay">
+  <div id="modal-box" class="modal" style="max-width:500px;position:relative">
+    <h3 id="modal-title"></h3>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="/static/js/main.js"></script>
+</body>
+</html>
