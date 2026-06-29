@@ -465,6 +465,146 @@ def init_db():
     );
     """)
     
+    # 招聘管理模块
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS recruitment_positions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        position_name TEXT NOT NULL,
+        department TEXT NOT NULL,
+        headcount INTEGER DEFAULT 1,
+        hired_count INTEGER DEFAULT 0,
+        requirements TEXT,
+        status TEXT DEFAULT '招聘中',
+        publish_date TEXT,
+        deadline TEXT,
+        created_by INTEGER,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS applicants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        position_id INTEGER NOT NULL,
+        name TEXT NOT NULL,
+        gender TEXT,
+        birth_date TEXT,
+        phone_encrypted TEXT,
+        email TEXT,
+        education TEXT,
+        major TEXT,
+        experience_years INTEGER,
+        resume_path TEXT,
+        status TEXT DEFAULT '待筛选',
+        applied_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (position_id) REFERENCES recruitment_positions(id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS interviews (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        applicant_id INTEGER NOT NULL,
+        interview_type TEXT,
+        interviewer_id INTEGER,
+        interview_date TEXT,
+        score REAL,
+        comments TEXT,
+        result TEXT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (applicant_id) REFERENCES applicants(id),
+        FOREIGN KEY (interviewer_id) REFERENCES users(id)
+    );
+    """)
+    
+    # 培训管理模块
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS training_plans (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        title TEXT NOT NULL,
+        training_type TEXT,
+        trainer TEXT,
+        start_date TEXT,
+        end_date TEXT,
+        location TEXT,
+        max_participants INTEGER,
+        enrolled_count INTEGER DEFAULT 0,
+        description TEXT,
+        status TEXT DEFAULT '计划中',
+        created_by INTEGER,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (created_by) REFERENCES users(id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS training_enrollments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        plan_id INTEGER NOT NULL,
+        emp_id INTEGER NOT NULL,
+        enrollment_status TEXT DEFAULT '已报名',
+        score REAL,
+        certificate_path TEXT,
+        feedback TEXT,
+        enrolled_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (plan_id) REFERENCES training_plans(id),
+        FOREIGN KEY (emp_id) REFERENCES employees(id),
+        UNIQUE(plan_id, emp_id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS training_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        training_name TEXT NOT NULL,
+        training_type TEXT,
+        training_date TEXT,
+        hours REAL,
+        score REAL,
+        certificate_no TEXT,
+        description TEXT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (emp_id) REFERENCES employees(id)
+    );
+    """)
+    
+    # 离职管理模块
+    db.executescript("""
+    CREATE TABLE IF NOT EXISTS resignation_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        resignation_type TEXT,
+        reason TEXT,
+        apply_date TEXT,
+        expected_last_day TEXT,
+        status TEXT DEFAULT '待审批',
+        approver_id INTEGER,
+        approved_at TEXT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (emp_id) REFERENCES employees(id),
+        FOREIGN KEY (approver_id) REFERENCES users(id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS resignation_handover (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        resignation_id INTEGER NOT NULL,
+        item_name TEXT NOT NULL,
+        item_type TEXT,
+        status TEXT DEFAULT '待交接',
+        handler_id INTEGER,
+        completed_at TEXT,
+        remarks TEXT,
+        FOREIGN KEY (resignation_id) REFERENCES resignation_requests(id),
+        FOREIGN KEY (handler_id) REFERENCES employees(id)
+    );
+    
+    CREATE TABLE IF NOT EXISTS resignation_records (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        emp_id INTEGER NOT NULL,
+        resignation_type TEXT,
+        last_working_day TEXT,
+        final_salary REAL,
+        handover_completed INTEGER DEFAULT 0,
+        exit_interview_notes TEXT,
+        created_at TEXT DEFAULT (datetime('now','localtime')),
+        FOREIGN KEY (emp_id) REFERENCES employees(id)
+    );
+    """)
+    
     # 性能优化 - 添加索引
     db.executescript("""
     CREATE INDEX IF NOT EXISTS idx_emp_status ON employees(status);

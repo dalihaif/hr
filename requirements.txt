@@ -1,2 +1,8 @@
 Flask==3.0.0
 openpyxl==3.1.2
+reportlab==5.0.0          # PDF生成
+redis==5.0.1              # Redis客户端
+celery==5.3.4             # 异步任务
+PyJWT==2.8.0              # JWT认证
+flask-cors==4.0.0         # CORS支持（Vue前后端分离）
+python-dotenv==1.0.0      # 环境变量管理
