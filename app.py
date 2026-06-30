@@ -14,6 +14,7 @@ from utils.validators import validate_email, validate_phone, validate_password, 
 from utils.rate_limiter import rate_limit, login_rate_limit
 from utils.pdf_generator import generate_salary_slip, generate_batch_salary_slips
 from utils.backup_manager import BackupManager
+from utils.salary_calculator import SalaryCalculator
 from config import Config
 from routes_hr_modules import register_hr_modules
 
@@ -2172,6 +2173,110 @@ def operation_logs():
     rows = db.execute("""SELECT ol.*, u.real_name FROM operation_logs ol JOIN users u ON ol.user_id=u.id 
         ORDER BY ol.created_at DESC LIMIT ?""", (limit,)).fetchall()
     return jsonify([dict(r) for r in rows])
+
+# ============================================================
+# 工资计算与自定义项目管理 API
+# ============================================================
+
+@app.route('/api/salary/calculate/<int:emp_id>', methods=['GET'])
+@require_permission('salary', 'read')
+def calculate_salary(emp_id):
+    """计算指定职工工资"""
+    year_month = request.args.get('year_month', '')
+    
+    calculator = SalaryCalculator(DB_PATH)
+    result = calculator.calculate_employee_salary(emp_id, year_month if year_month else None)
+    
+    if not result:
+        return jsonify({'error': '职工不存在'}), 404
+    
+    return jsonify(result)
+
+@app.route('/api/salary/items/config', methods=['GET'])
+@require_permission('salary', 'read')
+def get_salary_items_config():
+    """获取工资项目配置"""
+    category = request.args.get('category', 'all')
+    
+    calculator = SalaryCalculator(DB_PATH)
+    items = calculator.get_custom_items(category)
+    
+    return jsonify(items)
+
+@app.route('/api/salary/items/config', methods=['POST'])
+@require_permission('salary', 'write')
+def add_salary_item_config():
+    """添加自定义工资项目"""
+    data = request.json or {}
+    
+    # 验证必填字段
+    required_fields = ['item_name', 'item_code']
+    for field in required_fields:
+        if field not in data:
+            return jsonify({'error': f'缺少必填字段: {field}'}), 400
+    
+    calculator = SalaryCalculator(DB_PATH)
+    result = calculator.add_custom_item(data)
+    
+    if result['success']:
+        log_operation(g.user_id, 'salary', 'add', f"添加工资项目: {data['item_name']}")
+        return jsonify({'success': True, 'id': result['id']})
+    else:
+        return jsonify({'error': result['error']}), 500
+
+@app.route('/api/salary/items/config/<int:item_id>', methods=['PUT'])
+@require_permission('salary', 'write')
+def update_salary_item_config(item_id):
+    """更新工资项目配置"""
+    data = request.json or {}
+    
+    calculator = SalaryCalculator(DB_PATH)
+    result = calculator.update_custom_item(item_id, data)
+    
+    if result['success']:
+        log_operation(g.user_id, 'salary', 'update', f"更新工资项目ID: {item_id}")
+        return jsonify({'success': True})
+    else:
+        return jsonify({'error': result['error']}), 500
+
+@app.route('/api/salary/items/config/<int:item_id>', methods=['DELETE'])
+@require_permission('salary', 'write')
+def delete_salary_item_config(item_id):
+    """删除工资项目配置"""
+    calculator = SalaryCalculator(DB_PATH)
+    result = calculator.delete_custom_item(item_id)
+    
+    if result['success']:
+        log_operation(g.user_id, 'salary', 'delete', f"删除工资项目ID: {item_id}")
+        return jsonify({'success': True})
+    else:
+        return jsonify({'error': result['error']}), 500
+
+@app.route('/api/salary/categories', methods=['GET'])
+@require_permission('salary', 'read')
+def get_salary_categories():
+    """获取工资项目分类"""
+    db = get_db()
+    categories = db.execute("SELECT * FROM salary_item_categories ORDER BY sort_order ASC").fetchall()
+    return jsonify([dict(c) for c in categories])
+
+@app.route('/api/salary/tax-brackets', methods=['GET'])
+@require_permission('salary', 'read')
+def get_tax_brackets():
+    """获取个税税率表"""
+    db = get_db()
+    brackets = db.execute("SELECT * FROM tax_brackets ORDER BY level ASC").fetchall()
+    return jsonify([dict(b) for b in brackets])
+
+@app.route('/api/salary/social-security/config', methods=['GET'])
+@require_permission('salary', 'read')
+def get_social_security_config():
+    """获取社保缴费配置"""
+    db = get_db()
+    config = db.execute("SELECT * FROM social_security_config ORDER BY year DESC, month DESC LIMIT 1").fetchone()
+    if config:
+        return jsonify(dict(config))
+    return jsonify({})
 
 # ============================================================
 # PDF工资条生成 API

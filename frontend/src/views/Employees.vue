@@ -179,6 +179,148 @@
             </el-form-item>
           </el-col>
         </el-row>
+        
+        <!-- 事业单位人员信息 -->
+        <el-divider content-position="left">事业单位人员信息</el-divider>
+        
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="岗位等级">
+              <el-select v-model="formData.position_level" clearable placeholder="请选择">
+                <el-option label="管理岗" value="管理" />
+                <el-option label="专技岗" value="专技" />
+                <el-option label="工勤岗" value="工勤" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="专业技术职称">
+              <el-select v-model="formData.professional_title" clearable placeholder="请选择">
+                <el-option label="正高" value="正高" />
+                <el-option label="副高" value="副高" />
+                <el-option label="中级" value="中级" />
+                <el-option label="初级" value="初级" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="职称等级">
+              <el-input v-model="formData.title_level" placeholder="如：专技十级" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="岗位级别">
+              <el-input v-model="formData.post_level" placeholder="如：一级、二级" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="薪级">
+              <el-input-number v-model="formData.salary_grade" :min="1" :max="65" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="工龄(年)">
+              <el-input-number v-model="formData.work_years" :min="0" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="本单位工龄">
+              <el-input-number v-model="formData.service_years" :min="0" style="width: 100%" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="学历">
+              <el-select v-model="formData.education_level" clearable placeholder="请选择">
+                <el-option label="博士研究生" value="博士研究生" />
+                <el-option label="硕士研究生" value="硕士研究生" />
+                <el-option label="本科" value="本科" />
+                <el-option label="大专" value="大专" />
+                <el-option label="中专" value="中专" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="学位">
+              <el-select v-model="formData.degree_type" clearable placeholder="请选择">
+                <el-option label="博士" value="博士" />
+                <el-option label="硕士" value="硕士" />
+                <el-option label="学士" value="学士" />
+                <el-option label="无" value="无" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="人员类别">
+              <el-select v-model="formData.personnel_type" clearable placeholder="请选择">
+                <el-option label="在编" value="在编" />
+                <el-option label="合同制" value="合同制" />
+                <el-option label="劳务派遣" value="劳务派遣" />
+                <el-option label="返聘" value="返聘" />
+              </el-select>
+            </el-form-item>
+          </el-col>
+        </el-row>
+        
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="职工分类">
+              <el-input v-model="formData.staff_category" placeholder="如：医师、护士" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="聘任日期">
+              <el-date-picker
+                v-model="formData.appointment_date"
+                type="date"
+                placeholder="选择日期"
+                style="width: 100%"
+                format="YYYY-MM-DD"
+                value-format="YYYY-MM-DD"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        
+        <!-- 社保与银行信息 -->
+        <el-divider content-position="left">社保与银行信息</el-divider>
+        
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="社保号">
+              <el-input v-model="formData.social_security_no" placeholder="社会保障号码" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="公积金账号">
+              <el-input v-model="formData.housing_fund_no" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        
+        <el-row :gutter="20">
+          <el-col :span="12">
+            <el-form-item label="银行账号">
+              <el-input v-model="formData.bank_account" placeholder="工资卡号" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="开户银行">
+              <el-input v-model="formData.bank_name" placeholder="如：工商银行XX支行" />
+            </el-form-item>
+          </el-col>
+        </el-row>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>
@@ -340,7 +482,24 @@ const formData = reactive({
   current_dept: '',
   current_position: '',
   current_title: '',
-  status: '在职'
+  status: '在职',
+  // 事业单位人员信息
+  position_level: '',  // 岗位等级
+  professional_title: '',  // 专业技术职称
+  title_level: '',  // 职称等级
+  post_level: '',  // 岗位级别
+  salary_grade: null,  // 薪级
+  work_years: null,  // 工龄
+  service_years: null,  // 本单位工龄
+  education_level: '',  // 学历
+  degree_type: '',  // 学位
+  personnel_type: '',  // 人员类别
+  staff_category: '',  // 职工分类
+  appointment_date: '',  // 聘任日期
+  social_security_no: '',  // 社保号
+  housing_fund_no: '',  // 公积金账号
+  bank_account: '',  // 银行账号
+  bank_name: ''  // 开户银行
 })
 
 // 自定义字段
