@@ -32,6 +32,12 @@ const routes = [
         meta: { title: '工资管理', icon: 'Money' }
       },
       {
+        path: 'salary-config',
+        name: 'SalaryConfig',
+        component: () => import('@/views/SalaryConfig.vue'),
+        meta: { title: '工资标准配置', icon: 'Setting' }
+      },
+      {
         path: 'performance',
         name: 'Performance',
         component: () => import('@/views/Performance.vue'),
