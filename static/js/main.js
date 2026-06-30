@@ -773,11 +773,16 @@ async function loadSettings() {
   
   html += `<div class="card"><div class="card-header"><h3>用户管理</h3><button class="btn btn-sm btn-primary" onclick="showAddUser()">+ 新增用户</button></div>
     <div class="table-wrap"><table><thead><tr><th>用户名</th><th>姓名</th><th>角色</th><th>科室</th><th>最后登录</th><th>状态</th></tr></thead><tbody>`;
-  if (users) users.forEach(u => {
-    html += `<tr><td>${escHtml(u.username)}</td><td>${escHtml(u.real_name)}</td>
-    <td><span class="tag ${u.role==='admin'?'tag-danger':u.role==='hr_mgr'?'tag-warning':'tag-primary'}">${u.role}</span></td>
-    <td>${escHtml(u.department||'')}</td><td>${formatDate(u.last_login)}</td><td>${u.is_active?'<span class="tag tag-success">启用</span>':'<span class="tag tag-danger">禁用</span>'}</td></tr>`;
-  });
+  
+  // 先加载用户数据
+  const users = await apiFetch('/users');
+  if (users) {
+    users.forEach(u => {
+      html += `<tr><td>${escHtml(u.username)}</td><td>${escHtml(u.real_name)}</td>
+      <td><span class="tag ${u.role==='admin'?'tag-danger':u.role==='hr_mgr'?'tag-warning':'tag-primary'}">${u.role}</span></td>
+      <td>${escHtml(u.department||'')}</td><td>${formatDate(u.last_login)}</td><td>${u.is_active?'<span class="tag tag-success">启用</span>':'<span class="tag tag-danger">禁用</span>'}</td></tr>`;
+    });
+  }
   html += `</tbody></table></div></div>`;
   
   html += `<div class="card"><div class="card-header"><h3>操作日志</h3></div>
@@ -794,11 +799,7 @@ async function loadSettings() {
   // 加载绩效分类
   loadPerfCategories();
   
-  // 加载用户列表
-  const users = await apiFetch('/users');
-  if (users) {
-    // 用户表格已渲染
-  }
+  // 用户数据已在前面加载并渲染
   
   const logs = await apiFetch('/operation_logs?limit=20');
   if (logs) {
