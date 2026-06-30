@@ -72,6 +72,12 @@ const routes = [
         name: 'Backup',
         component: () => import('@/views/Backup.vue'),
         meta: { title: '数据备份', icon: 'FolderOpened' }
+      },
+      {
+        path: 'self-service',
+        name: 'EmployeeSelfService',
+        component: () => import('@/views/EmployeeSelfService.vue'),
+        meta: { title: '自助服务', icon: 'UserFilled' }
       }
     ]
   }

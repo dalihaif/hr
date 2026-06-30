@@ -2455,6 +2455,155 @@ def cleanup_backups():
         return jsonify({'error': str(e)}), 500
 
 # ============================================================
+# 职工自助服务 API
+# ============================================================
+@app.route('/api/employees/me', methods=['GET'])
+@require_login
+def get_current_employee():
+    """获取当前登录用户的完整信息"""
+    db = get_db()
+    emp = db.execute("""SELECT e.*, 
+        (SELECT department FROM position_records WHERE emp_id=e.id AND is_current=1) as current_dept,
+        (SELECT position FROM position_records WHERE emp_id=e.id AND is_current=1) as current_position,
+        (SELECT title_name FROM title_records WHERE emp_id=e.id AND is_current=1) as current_title
+        FROM employees e WHERE e.user_id=?""", (session['user_id'],)).fetchone()
+    
+    if not emp:
+        return jsonify({'error': '未找到职工信息'}), 404
+    
+    d = dict(emp)
+    # 解密手机号
+    d['phone'] = aes_decrypt(d.get('phone_encrypted', ''))
+    return jsonify(d)
+
+@app.route('/api/performance/my-assessments', methods=['GET'])
+@require_login
+def get_my_assessments():
+    """获取我的绩效考核列表"""
+    db = get_db()
+    rows = db.execute("""SELECT pa.*, pt.name as period_name, pt.period_type
+        FROM perf_assessments pa
+        JOIN perf_templates pt ON pa.template_id=pt.id
+        WHERE pa.emp_id=? ORDER BY pa.created_at DESC LIMIT 24""",
+        (session['user_id'],)).fetchall()
+    
+    result = []
+    for r in rows:
+        d = dict(r)
+        # 计算总分
+        scores = db.execute("""SELECT ps.*, pd.weight, pd.max_score
+            FROM perf_scores ps
+            JOIN perf_dimensions pd ON ps.dimension_id=pd.id
+            WHERE ps.assessment_id=?""", (d['id'],)).fetchall()
+        
+        total_score = 0
+        for s in scores:
+            sd = dict(s)
+            total_score += sd['score'] * sd['weight'] / sd['max_score']
+        
+        d['total_score'] = round(total_score, 2)
+        
+        # 确定等级
+        if total_score >= 90:
+            d['grade'] = '优秀'
+        elif total_score >= 75:
+            d['grade'] = '良好'
+        elif total_score >= 60:
+            d['grade'] = '合格'
+        else:
+            d['grade'] = '不合格'
+        
+        # 绩效金额(从系数表查询)
+        dept = d.get('department', '')
+        position = d.get('position', '')
+        coeff_record = db.execute("""SELECT coefficient, base_performance 
+            FROM department_coefficients 
+            WHERE department=? AND position_type=? AND is_active=1 
+            ORDER BY effective_date DESC LIMIT 1""",
+            (dept, position)).fetchone()
+        
+        if coeff_record:
+            coeff = dict(coeff_record)
+            d['performance_amount'] = round(coeff['base_performance'] * coeff['coefficient'] * (total_score / 100), 2)
+        else:
+            d['performance_amount'] = None
+        
+        result.append(d)
+    
+    return jsonify(result)
+
+@app.route('/api/attendance/my-records', methods=['GET'])
+@require_login
+def get_my_attendance_records():
+    """获取我的考勤记录"""
+    month = request.args.get('month', datetime.datetime.now().strftime('%Y-%m'))
+    db = get_db()
+    
+    # 获取考勤记录
+    records = db.execute("""SELECT * FROM attendance_records 
+        WHERE emp_id=? AND strftime('%Y-%m', attendance_date)=? 
+        ORDER BY attendance_date DESC""",
+        (session['user_id'], month)).fetchall()
+    
+    # 获取考勤统计
+    stats = db.execute("""SELECT * FROM attendance_statistics 
+        WHERE emp_id=? AND month=?""",
+        (session['user_id'], month)).fetchone()
+    
+    return jsonify({
+        'data': [dict(r) for r in records],
+        'stats': dict(stats) if stats else None
+    })
+
+@app.route('/api/attendance/my-leave-requests', methods=['GET'])
+@require_login
+def get_my_leave_requests():
+    """获取我的请假申请列表"""
+    db = get_db()
+    rows = db.execute("""SELECT * FROM leave_requests 
+        WHERE emp_id=? ORDER BY created_at DESC""",
+        (session['user_id'],)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+@app.route('/api/attendance/my-leave-balance', methods=['GET'])
+@require_login
+def get_my_leave_balance():
+    """获取我的假期余额"""
+    db = get_db()
+    balance = db.execute("""SELECT * FROM leave_balances WHERE emp_id=?""",
+        (session['user_id'],)).fetchone()
+    
+    if balance:
+        d = dict(balance)
+        return jsonify({
+            'annual': d.get('annual_leave', 0),
+            'sick': d.get('sick_leave', 0),
+            'compensatory': d.get('compensatory_leave', 0),
+            'other': d.get('other_leave', 0)
+        })
+    else:
+        return jsonify({'annual': 0, 'sick': 0, 'compensatory': 0, 'other': 0})
+
+@app.route('/api/training/my-records', methods=['GET'])
+@require_login
+def get_my_training_records():
+    """获取我的培训记录"""
+    db = get_db()
+    rows = db.execute("""SELECT et.*, t.training_name, t.start_date, t.end_date, t.hours
+        FROM employee_training et
+        JOIN trainings t ON et.training_id=t.id
+        WHERE et.emp_id=? ORDER BY t.start_date DESC""",
+        (session['user_id'],)).fetchall()
+    
+    result = []
+    for r in rows:
+        d = dict(r)
+        d['year'] = int(d['start_date'][:4]) if d['start_date'] else 0
+        result.append(d)
+    
+    return jsonify(result)
+
+# ============================================================
 # 页面路由
 # ============================================================
 @app.route('/')
